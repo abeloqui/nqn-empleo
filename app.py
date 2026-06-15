@@ -91,7 +91,8 @@ def scraping_computrabajo(termino):
         # Buscamos los contenedores de artículos de empleo estándar de Computrabajo
         articulos = soup.find_all('article', class_='box_offer')
 
-        for art in art_limit := articulos[:15]:
+        # Limitamos a los primeros 15 artículos de forma directa y segura sin operador morsa
+        for art in articulos[:15]:
             try:
                 title_elem = art.find('a', class_='js-o-link')
                 if not title_elem: continue
@@ -102,7 +103,7 @@ def scraping_computrabajo(termino):
                 emp_elem = art.find('a', class_='fc_base')
                 empresa = emp_elem.text.strip() if emp_elem else "Confidencial"
                 
-                # Verificación estricta de que pertenezca a Neuquén
+                # Verificación de que pertenezca a Neuquén
                 loc_elem = art.find('p', class_='fs14')
                 loc_text = loc_elem.text.strip() if loc_elem else "Neuquén"
                 
@@ -193,7 +194,7 @@ with tab_busqueda:
     
     col_p1, col_p2 = st.columns([3, 1])
     puesto = col_p1.text_input("¿Qué puesto buscás?", placeholder="Ej: Administrativo, Vendedor, Cajero, Repositor", key="puesto_bus")
-    permitir_remoto = col_p2.checkbox("Incluir ofertas 100% Remotas", value=False, style="margin-top:25px;")
+    permitir_remoto = col_p2.checkbox("Incluir ofertas 100% Remotas", value=False, key="chk_remoto")
     
     btn_buscar = st.button("Buscar en Portales Digitales", type="primary")
 
@@ -232,7 +233,7 @@ with tab_busqueda:
 
 # --- PESTAÑA 2: VISUALIZADOR DE AVISOS DE LA COMUNIDAD ---
 with tab_comunidad:
-    st.subheader("📢 Ofertas detectadas en comercios y redes locales")
+    st.subheader("📢 Ofertas de comercios y redes locales")
     st.write("Datos rescatados de carteles en la calle, grupos de Facebook y avisos vecinales de Neuquén.")
     
     avisos_comunidad = cargar_avisos_locales()
@@ -279,7 +280,7 @@ with tab_panel_carga:
         
         if btn_registrar:
             if not puesto_c or not contacto_c or not descripcion_c:
-                st.error("⚠️ Los campos 'Puesto', 'Contacto' y 'Detalle del aviso' son completamente obligatorios para no confundir a los usuarios.")
+                st.error("⚠️ Los campos 'Puesto', 'Contacto' y 'Detalle del aviso' son obligatorios para no confundir a los usuarios.")
             else:
                 nuevo_registro = {
                     "puesto": puesto_c.strip(),
@@ -292,3 +293,4 @@ with tab_panel_carga:
                 guardar_aviso_local(nuevo_registro)
                 st.success(f"🎉 ¡Éxito! El aviso para '{puesto_c}' fue guardado y ya figura en la pestaña comunitaria.")
                 st.balloons()
+            
