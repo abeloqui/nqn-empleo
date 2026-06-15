@@ -1,5 +1,9 @@
 import streamlit as st
 import pandas as pd
+import json
+import os
+import requests
+from bs4 import BeautifulSoup
 from jobspy import scrape_jobs
 from datetime import datetime
 
@@ -23,6 +27,14 @@ st.markdown("""
         margin-bottom: 18px;
         border-left: 6px solid #0083B0;
     }
+    .community-card {
+        background-color: #FFFBEB;
+        padding: 22px;
+        border-radius: 12px;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.05);
+        margin-bottom: 18px;
+        border-left: 6px solid #F59E0B;
+    }
     .job-title { color: #004B6E; font-size: 20px; font-weight: bold; margin-bottom: 6px; }
     .job-meta { color: #4B5563; font-size: 14px; margin-bottom: 12px; }
     .source-badge {
@@ -33,147 +45,250 @@ st.markdown("""
         font-size: 12px;
         font-weight: bold;
     }
+    .community-badge {
+        background-color: #FEF3C7;
+        color: #92400E;
+        padding: 4px 10px;
+        border-radius: 6px;
+        font-size: 12px;
+        font-weight: bold;
+    }
     </style>
 """, unsafe_allow_html=True)
 
+# --- GESTIÓN DE BASE DE DATOS LOCAL (AVISOS COMUNITARIOS) ---
+DB_FILE = "avisos_comunidad.json"
 
-# --- LÓGICA DE EXTRACCIÓN LOCAL CON FILTRADO ---
-@st.cache_data(show_spinner="Escaneando portales en busca de ofertas para Neuquén...", ttl=600)
-def buscar_ofertas_locales(sitios, termino, resultados_por_sitio, incluir_remoto):
+def cargar_avisos_locales():
+    if not os.path.exists(DB_FILE):
+        return []
     try:
-        # Forzamos la ubicación a Neuquén, Argentina directamente en la API de JobSpy
-        jobs = scrape_jobs(
-            site_name=sitios,
-            search_term=termino,
-            location="Neuquén, Argentina",
-            results_per_sheet=resultados_por_sitio,
-            hours_old=168,  # Ampliamos a los últimos 7 días ya que el mercado local se mueve a otro ritmo que el global
-        )
+        with open(DB_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except:
+        return []
+
+def guardar_aviso_local(nuevo_aviso):
+    avisos = cargar_avisos_locales()
+    avisos.insert(0, nuevo_aviso)  # Los más nuevos primero
+    with open(DB_FILE, "w", encoding="utf-8") as f:
+        json.dump(avisos, f, ensure_ascii=False, indent=4)
+
+# --- SCRAPER MODULAR PARA COMPUTRABAJO NEUQUÉN ---
+def scraping_computrabajo(termino):
+    """Rastrea de manera segura ofertas de Computrabajo específicas para Neuquén."""
+    ofertas = []
+    try:
+        palabra_clave = termino.replace(" ", "-").lower()
+        url = f"https://ar.computrabajo.com/trabajo-de-{palabra_clave}-en-neuquen"
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
         
-        if jobs is None or jobs.empty:
-            return pd.DataFrame()
-            
-        columnas_interes = {
-            'title': 'Título',
-            'company': 'Empresa',
-            'job_url': 'Enlace',
-            'location': 'Ubicación',
-            'site': 'Fuente',
-            'date_posted': 'Fecha',
-            'is_remote': 'Remoto'
-        }
-        
-        columnas_existentes = [col for col in columnas_interes.keys() if col in jobs.columns]
-        df_limpio = jobs[columnas_existentes].rename(columns={k: v for k, v in columnas_interes.items() if k in columnas_existentes})
-        
-        if 'Fecha' in df_limpio.columns:
-            df_limpio['Fecha'] = pd.to_datetime(df_limpio['Fecha'], errors='coerce').dt.strftime('%Y-%m-%d')
-            df_limpio['Fecha'] = df_limpio['Fecha'].fillna("Reciente")
+        response = requests.get(url, headers=headers, timeout=10)
+        if response.status_code != 200:
+            return ofertas
 
-        # --- FILTRADO ESTRICTO DE LOCALIZACIÓN ---
-        # Nos aseguramos de que solo pasen ofertas que digan "Neuquén" en la ubicación
-        # Opcionalmente dejamos pasar las "Remoto" si el usuario activó la casilla
-        if 'Ubicación' in df_limpio.columns:
-            filtro_neuquen = df_limpio['Ubicación'].str.contains('Neuquén|Neuquen', case=False, na=False)
-            
-            if incluir_remoto and 'Remoto' in df_limpio.columns:
-                filtro_remoto = df_limpio['Remoto'] == True
-                df_limpio = df_limpio[filtro_neuquen | filtro_remoto]
-            else:
-                df_limpio = df_limpio[filtro_neuquen]
+        soup = BeautifulSoup(response.text, 'html.parser')
+        # Buscamos los contenedores de artículos de empleo estándar de Computrabajo
+        articulos = soup.find_all('article', class_='box_offer')
 
-        return df_limpio
-
-    except Exception as e:
-        st.sidebar.error("Nota: Hubo una limitación temporal con un portal externo.")
-        return pd.DataFrame()
-
-
-# --- INTERFAZ DE USUARIO LOCAL ---
-st.title("📍 Bolsa de Trabajo Conectada - Neuquén Capital")
-st.subheader("Buscador unificado de ofertas laborales exclusivas para la región")
-st.write("Esta herramienta centraliza anuncios de múltiples portales web filtrando automáticamente para Neuquén.")
-
-# --- BARRA LATERAL ---
-st.sidebar.header("🔍 Filtros de Búsqueda")
-
-puesto = st.sidebar.text_input(
-    "¿Qué estás buscando?", 
-    value="", 
-    placeholder="Ej: Cajero, Repositor, Desarrollador, Administrativo"
-)
-
-permitir_remoto = st.sidebar.checkbox("Incluir también ofertas 100% Remotas", value=False)
-
-st.sidebar.divider()
-st.sidebar.subheader("⚙️ Portales activos")
-
-portales_disponibles = ["linkedin", "indeed", "zip_recruiter"]
-portales_seleccionados = st.sidebar.multiselect(
-    "Buscar en:", 
-    options=portales_disponibles, 
-    default=["linkedin", "indeed"]
-)
-
-# En mercados locales es mejor pedir más resultados para no perderse nada relevante
-limite_resultados = st.sidebar.slider("Rango máximo de rastreo:", min_value=10, max_value=50, value=30)
-
-btn_buscar = st.sidebar.button("Buscar en Neuquén", type="primary")
-
-# --- PANEL PRINCIPAL (RESULTADOS) ---
-if btn_buscar:
-    if not puesto.strip():
-        st.warning("⚠️ Por favor, ingresá una palabra clave o puesto para empezar a buscar.")
-    elif not portales_seleccionados:
-        st.warning("⚠️ Seleccioná al menos un portal de empleo en la barra lateral.")
-    else:
-        df_resultados = buscar_ofertas_locales(
-            sitios=portales_seleccionados,
-            termino=puesto,
-            resultados_por_sitio=limite_resultados,
-            incluir_remoto=permitir_remoto
-        )
-
-        if not df_resultados.empty:
-            # Métricas locales
-            col_m1, col_m2 = st.columns(2)
-            col_m1.metric("Ofertas encontradas para vos", len(df_resultados))
-            col_m2.metric("Zona de cobertura", "Neuquén Capital y alrededores")
-            
-            st.divider()
-
-            for _, fila in df_resultados.iterrows():
-                url = fila['Enlace'] if pd.notna(fila['Enlace']) else "#"
-                ubicacion_oferta = fila.get('Ubicación', 'Neuquén')
-                fecha_oferta = fila.get('Fecha', 'Reciente')
+        for art in art_limit := articulos[:15]:
+            try:
+                title_elem = art.find('a', class_='js-o-link')
+                if not title_elem: continue
                 
-                st.markdown(f"""
-                    <div class="job-card">
-                        <div class="job-title">{fila['Título']}</div>
-                        <div class="job-meta">
-                            🏢 <b>{fila['Empresa']}</b> | 📍 {ubicacion_oferta} | 📅 Publicado: {fecha_oferta}
-                        </div>
-                        <span class="source-badge">🌐 Vía {fila['Fuente'].upper()}</span>
-                        <br><br>
-                        <a href="{url}" target="_blank" style="text-decoration: none;">
-                            <button style="background-color: #0083B0; color: white; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-weight: bold;">
-                                Postularse / Ver Detalle ↗
-                            </button>
-                        </a>
-                    </div>
-                """, unsafe_allow_html=True)
+                titulo = title_elem.text.strip()
+                enlace = "https://ar.computrabajo.com" + title_elem['href']
                 
-            # Exportador de datos
-            st.sidebar.divider()
-            st.sidebar.subheader("💾 Guardar Búsqueda")
-            csv = df_resultados.to_csv(index=False).encode('utf-8')
-            st.sidebar.download_button(
-                label="Descargar listado (CSV)",
-                data=csv,
-                file_name=f"empleos_nqn_{puesto.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d')}.csv",
-                mime='text/csv',
+                emp_elem = art.find('a', class_='fc_base')
+                empresa = emp_elem.text.strip() if emp_elem else "Confidencial"
+                
+                # Verificación estricta de que pertenezca a Neuquén
+                loc_elem = art.find('p', class_='fs14')
+                loc_text = loc_elem.text.strip() if loc_elem else "Neuquén"
+                
+                if "neuquén" in loc_text.lower() or "neuquen" in loc_text.lower():
+                    ofertas.append({
+                        'Título': titulo,
+                        'Empresa': empresa,
+                        'Enlace': enlace,
+                        'Ubicación': "Neuquén Capital (Computrabajo)",
+                        'Fuente': "computrabajo",
+                        'Fecha': datetime.now().strftime('%Y-%m-%d')
+                    })
+            except:
+                continue
+    except:
+        pass
+    return ofertas
+
+# --- LÓGICA DE EXTRACCIÓN GLOBAL (JOBSPY + COMPUTRABAJO) ---
+@st.cache_data(show_spinner="Escaneando redes y portales en busca de ofertas...", ttl=600)
+def buscar_ofertas_globales(sitios, termino, resultados_por_sitio, incluir_remoto):
+    df_final = pd.DataFrame()
+    sitios_jobspy = [s for s in sitios if s in ["linkedin", "indeed", "zip_recruiter"]]
+    
+    # 1. Ejecutar JobSpy si aplica
+    if sitios_jobspy:
+        try:
+            jobs = scrape_jobs(
+                site_name=sitios_jobspy,
+                search_term=termino,
+                location="Neuquén, Argentina",
+                country_indeed="argentina",
+                results_per_sheet=resultados_por_sitio,
+                hours_old=168,  
             )
+            if jobs is not None and not jobs.empty:
+                columnas_interes = {'title': 'Título', 'company': 'Empresa', 'job_url': 'Enlace', 'location': 'Ubicación', 'site': 'Fuente', 'date_posted': 'Fecha', 'is_remote': 'Remoto'}
+                columnas_existentes = [col for col in columnas_interes.keys() if col in jobs.columns]
+                df_final = jobs[columnas_existentes].rename(columns={k: v for k, v in columnas_interes.items() if k in columnas_existentes})
+                if 'Fecha' in df_final.columns:
+                    df_final['Fecha'] = pd.to_datetime(df_final['Fecha'], errors='coerce').dt.strftime('%Y-%m-%d').fillna("Reciente")
+        except:
+            pass
+
+    # 2. Ejecutar Computrabajo de forma nativa si está seleccionado
+    if "computrabajo" in sitios:
+        ofertas_ct = scraping_computrabajo(termino)
+        if ofertas_ct:
+            df_ct = pd.DataFrame(ofertas_ct)
+            df_final = pd.concat([df_final, df_ct], ignore_index=True)
+
+    # 3. Filtrado de localización estricto
+    if not df_final.empty and 'Ubicación' in df_final.columns:
+        filtro_neuquen = df_final['Ubicación'].str.contains('Neuquén|Neuquen|computrabajo', case=False, na=False)
+        if incluir_remoto and 'Remoto' in df_final.columns:
+            df_final = df_final[filtro_neuquen | (df_final['Remoto'] == True)]
         else:
-            st.info("No se encontraron anuncios recientes con esa palabra clave específica en Neuquén. Probá usando términos más generales (ej: si buscaste 'Cajero de supermercado', probá con 'Cajero' o 'Atención al cliente').")
-else:
-    st.info("💡 Ingresá el puesto que te interesa a la izquierda (ej: *Administrativo*, *Vendedor*, *Soporte*) y hacé clic en **'Buscar en Neuquén'**.")
+            df_final = df_final[filtro_neuquen]
+            
+    return df_final
+
+
+# --- INTERFAZ DE USUARIO ---
+st.title("📍 Bolsa de Trabajo Conectada - Neuquén Capital")
+st.write("Centralizador de portales digitales y avisos barriales compartidos por la comunidad.")
+
+# Estructura de Pestañas Principales
+tab_busqueda, tab_comunidad, tab_panel_carga = st.tabs([
+    "🔍 Buscador de Portales", 
+    "👥 Avisos de la Comunidad / Redes", 
+    "📤 Cargar Aviso Local (Admin)"
+])
+
+# --- BARRA LATERAL (COMPARTIDA) ---
+st.sidebar.header("⚙️ Configuración del Rastreador")
+portales_disponibles = ["linkedin", "indeed", "computrabajo"]
+portales_seleccionados = st.sidebar.multiselect(
+    "Portales web a escanear:", 
+    options=portales_disponibles, 
+    default=["linkedin", "indeed", "computrabajo"]
+)
+limite_resultados = st.sidebar.slider("Escaneo máximo por portal:", min_value=10, max_value=40, value=25)
+
+
+# --- PESTAÑA 1: BUSCADOR DE PORTALES DIGITALES ---
+with tab_busqueda:
+    st.caption("Filtra y extrae información en tiempo real de LinkedIn, Indeed y Computrabajo.")
+    
+    col_p1, col_p2 = st.columns([3, 1])
+    puesto = col_p1.text_input("¿Qué puesto buscás?", placeholder="Ej: Administrativo, Vendedor, Cajero, Repositor", key="puesto_bus")
+    permitir_remoto = col_p2.checkbox("Incluir ofertas 100% Remotas", value=False, style="margin-top:25px;")
+    
+    btn_buscar = st.button("Buscar en Portales Digitales", type="primary")
+
+    if btn_buscar:
+        if not puesto.strip():
+            st.warning("⚠️ Escribí una palabra clave para iniciar el rastreo.")
+        elif not portales_seleccionados:
+            st.warning("⚠️ Seleccioná al menos un portal en la barra lateral.")
+        else:
+            df_res = buscar_ofertas_globales(portales_seleccionados, puesto, limite_resultados, permitir_remoto)
+
+            if not df_res.empty:
+                st.metric("Anuncios consolidados en internet", len(df_res))
+                st.divider()
+
+                for _, fila in df_res.iterrows():
+                    url = fila['Enlace'] if pd.notna(fila['Enlace']) else "#"
+                    st.markdown(f"""
+                        <div class="job-card">
+                            <div class="job-title">{fila['Título']}</div>
+                            <div class="job-meta">
+                                🏢 <b>{fila['Empresa']}</b> | 📍 {fila['Ubicación']} | 📅 Detectado: {fila['Fecha']}
+                            </div>
+                            <span class="source-badge">🌐 Vía {fila['Fuente'].upper()}</span>
+                            <br><br>
+                            <a href="{url}" target="_blank" style="text-decoration: none;">
+                                <button style="background-color: #0083B0; color: white; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-weight: bold;">
+                                    Ver Oferta Original ↗
+                                </button>
+                            </a>
+                        </div>
+                    """, unsafe_allow_html=True)
+            else:
+                st.info("No encontramos resultados automáticos en los portales para ese término exacto hoy. ¡Revisá la pestaña de la comunidad por si se cargó manualmente!")
+
+
+# --- PESTAÑA 2: VISUALIZADOR DE AVISOS DE LA COMUNIDAD ---
+with tab_comunidad:
+    st.subheader("📢 Ofertas detectadas en comercios y redes locales")
+    st.write("Datos rescatados de carteles en la calle, grupos de Facebook y avisos vecinales de Neuquén.")
+    
+    avisos_comunidad = cargar_avisos_locales()
+    
+    if avisos_comunidad:
+        st.info(f"💡 Hay {len(avisos_comunidad)} avisos cargados manualmente por la administración.")
+        for aviso in avisos_comunidad:
+            st.markdown(f"""
+                <div class="community-card">
+                    <div class="job-title">{aviso['puesto']}</div>
+                    <div class="job-meta">
+                        🏢 <b>Comercio/Empresa:</b> {aviso['empresa']} | 📍 <b>Dirección/Zona:</b> {aviso['lugar']} | 📅 <b>Cargado el:</b> {aviso['fecha_carga']}
+                    </div>
+                    <div style="background:#fdfdfd; padding:12px; border-radius:6px; margin-bottom:12px; border:1px solid #f2f2f2; font-size:15px; color:#1f2937; white-space: pre-wrap;">
+                        {aviso['descripcion']}
+                    </div>
+                    <div style="font-size:14px; color:#059669; margin-bottom:10px;">
+                        📩 <b>Cómo postularse:</b> {aviso['contacto']}
+                    </div>
+                    <span class="community-badge">📌 AVISO BARRIAL / GRUPOS</span>
+                </div>
+            """, unsafe_allow_html=True)
+    else:
+        st.info("Aún no hay avisos manuales cargados en esta sección. ¡Usa la siguiente pestaña para cargar el primero!")
+
+
+# --- PESTAÑA 3: PANEL DE CARGA EXCLUSIVO ADMIN ---
+with tab_panel_carga:
+    st.subheader("📤 Cargar información recolectada de la calle o Facebook")
+    st.write("Utilizá este formulario para transcribir los anuncios que veas en grupos locales o carteles públicos en el centro de Neuquén.")
+    
+    with st.form("form_carga_admin", clear_on_submit=True):
+        puesto_c = st.text_input("Título del puesto requerido:", placeholder="Ej: Mozo de fin de semana, Empleada administrativa")
+        empresa_c = st.text_input("Nombre del Comercio / Empresa:", placeholder="Ej: Tienda de ropa centro, Panadería zona oeste")
+        lugar_c = st.text_input("Dirección o Zona de Neuquén Capital:", placeholder="Ej: Perito Moreno al 300, Calle San Martín")
+        contacto_c = st.text_input("Método de contacto para el postulante:", placeholder="Ej: Dejar CV en el local / WhatsApp: 299xxxxxx / mail@ejemplo.com")
+        
+        descripcion_c = st.text_area(
+            "Detalle del aviso o transcripción del posteo:", 
+            placeholder="Pegá acá el texto completo del grupo de Facebook o los requisitos del cartel de la vidriera..."
+        )
+        
+        btn_registrar = st.form_submit_button("Publicar en la Plataforma", type="primary")
+        
+        if btn_registrar:
+            if not puesto_c or not contacto_c or not descripcion_c:
+                st.error("⚠️ Los campos 'Puesto', 'Contacto' y 'Detalle del aviso' son completamente obligatorios para no confundir a los usuarios.")
+            else:
+                nuevo_registro = {
+                    "puesto": puesto_c.strip(),
+                    "empresa": empresa_c.strip() if empresa_c else "Particular / Comercio Chico",
+                    "lugar": lugar_c.strip() if lugar_c else "Neuquén Capital",
+                    "contacto": contacto_c.strip(),
+                    "descripcion": descripcion_c.strip(),
+                    "fecha_carga": datetime.now().strftime('%Y-%m-%d %H:%M')
+                }
+                guardar_aviso_local(nuevo_registro)
+                st.success(f"🎉 ¡Éxito! El aviso para '{puesto_c}' fue guardado y ya figura en la pestaña comunitaria.")
+                st.balloons()
