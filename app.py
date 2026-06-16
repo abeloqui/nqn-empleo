@@ -420,6 +420,7 @@ if st.session_state["admin_autenticado"]:
                     if st.button("🗑️ Borrar", key=f"btn_del_{id_unico}"):
                       borrar_aviso_en_sheets(id_unico)
                       st.rerun()
+                      
                     else:
-                    st.info("No hay avisos manuales activos en el sistema para dar de baja.")
+                     st.info("No hay avisos manuales activos en el sistema para dar de baja.")
     
