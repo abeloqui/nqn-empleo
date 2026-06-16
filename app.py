@@ -1,11 +1,12 @@
 import streamlit as st
 import pandas as pd
-import json
-import os
 import requests
+import json # Asegurate de que json esté importado
 from bs4 import BeautifulSoup
 from jobspy import scrape_jobs
 from datetime import datetime
+import gspread
+from google.oauth2 import service_account
 
 # --- CONFIGURACIÓN DE LA PÁGINA ---
 st.set_page_config(
@@ -61,25 +62,76 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # --- GESTIÓN DE BASE DE DATOS LOCAL (AVISOS COMUNITARIOS JSON) ---
-DB_FILE = "avisos_comunidad.json"
+
+
+
+
+
+
+
+
+# --- GESTIÓN DE BASE DE DATOS (GOOGLE SHEETS) ---
+# Pegá acá la URL completa de tu planilla de Google
+SHEET_URL = "https://docs.google.com/spreadsheets/d/1aMqWtGswFmqUhOPrfveAfj137SUDzpr0ENcERsZdu90/edit"
+
+@st.cache_resource
+def obtener_conexion_sheets():
+    """Autentica y devuelve la conexión a la hoja de cálculo."""
+    cred_dict = json.loads(st.secrets["google_credentials"])
+    creds = service_account.Credentials.from_service_account_info(
+        cred_dict,
+        scopes=["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
+    )
+    cliente = gspread.authorize(creds)
+    return cliente.open_by_url(SHEET_URL).sheet1
 
 def cargar_avisos_locales():
-    if not os.path.exists(DB_FILE):
-        return []
     try:
-        with open(DB_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except:
+        hoja = obtener_conexion_sheets()
+        registros = hoja.get_all_records()
+        # Invertimos la lista para mostrar primero lo último que cargaste
+        return list(reversed(registros)) 
+    except Exception as e:
+        st.error(f"Error al cargar la base de datos: {e}")
         return []
-
-def guardar_todos_los_avisos(avisos):
-    with open(DB_FILE, "w", encoding="utf-8") as f:
-        json.dump(avisos, f, ensure_ascii=False, indent=4)
 
 def guardar_aviso_local(nuevo_aviso):
-    avisos = cargar_avisos_locales()
-    avisos.insert(0, nuevo_aviso)  # Los más nuevos primero
-    guardar_todos_los_avisos(avisos)
+    hoja = obtener_conexion_sheets()
+    if not hoja.get_all_values():
+        hoja.append_row(["id", "puesto", "empresa", "lugar", "contacto", "descripcion", "fecha_carga"])
+    
+    # Mapea los valores según las columnas existentes para evitar desorden
+    encabezados = hoja.row_values(1)
+    fila = [str(nuevo_aviso.get(col, "")) for col in encabezados]
+    hoja.append_row(fila)
+
+def eliminar_aviso_por_id(id_unico):
+    hoja = obtener_conexion_sheets()
+    registros = hoja.get_all_records()
+    for i, aviso in enumerate(registros):
+        if str(aviso.get("id", "")) == str(id_unico):
+            # Sumamos 2 porque gspread cuenta desde 1 y la primera fila es el encabezado
+            hoja.delete_rows(i + 2)
+            break
+            
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 # --- SCRAPER MODULAR PARA COMPUTRABAJO NEUQUÉN (CORREGIDO) ---
 def scraping_computrabajo(termino):
