@@ -416,10 +416,10 @@ if st.session_state["admin_autenticado"]:
                     st.markdown(f"**Puesto:** {aviso['puesto']} | **Comercio:** {aviso['empresa']} *(Cargado el: {aviso['fecha_carga']})*")
                 
                 with col_accion:
-                    # El botón de eliminar se vincula al identificador del aviso
+                    
                     if st.button("🗑️ Borrar", key=f"btn_del_{id_unico}"):
-                    borrar_aviso_en_sheets(id_unico)
-                    st.rerun()
+                      borrar_aviso_en_sheets(id_unico)
+                      st.rerun()
                     else:
                     st.info("No hay avisos manuales activos en el sistema para dar de baja.")
     
