@@ -105,13 +105,13 @@ def guardar_aviso_local(nuevo_aviso):
     fila = [str(nuevo_aviso.get(col, "")) for col in encabezados]
     hoja.append_row(fila)
 
-def eliminar_aviso_por_id(id_unico):
+def borrar_aviso_en_sheets(id_a_borrar):
     hoja = obtener_conexion_sheets()
     registros = hoja.get_all_records()
     for i, aviso in enumerate(registros):
-        if str(aviso.get("id", "")) == str(id_unico):
-            # Sumamos 2 porque gspread cuenta desde 1 y la primera fila es el encabezado
-            hoja.delete_rows(i + 2)
+        # Buscamos el registro que coincida con el ID
+        if str(aviso['id']) == str(id_a_borrar):
+            hoja.delete_rows(i + 2) # +2: 1 por el encabezado, 1 por base 1 de gspread
             break
             
 
